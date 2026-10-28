@@ -1,14 +1,10 @@
 """
 Unit and Integration Tests for Sentinel AI Chatbot (Phase 1)
-=============================================================
-Uses unittest.mock to mock all Groq API calls and SDK interactions,
-guaranteeing tests execute offline, consume 0 API credits, and require
-no active GROQ_API_KEY.
+Uses unittest.mock to mock all Groq API calls (offline, 0 credits used).
 """
 
-import os
-import pytest
 from unittest.mock import MagicMock, patch
+import pytest
 import groq
 import httpx
 
@@ -26,12 +22,7 @@ from app import (
 )
 
 
-# ------------------------------------------------------------------------------
-# 1. Input Validation Tests
-# ------------------------------------------------------------------------------
 class TestInputValidation:
-    """Tests for user input sanitization and boundary constraints."""
-
     def test_valid_input_passes(self):
         valid_message = "What is the STRIDE threat modeling framework?"
         is_valid, error = validate_user_input(valid_message, max_length=500)
@@ -74,12 +65,7 @@ class TestInputValidation:
         assert "null-byte" in error
 
 
-# ------------------------------------------------------------------------------
-# 2. API Message Structure & History Formatting Tests
-# ------------------------------------------------------------------------------
 class TestMessageFormatting:
-    """Tests for proper conversation packaging for Groq API."""
-
     def test_build_api_messages_with_system_and_user(self):
         sys_prompt = "You are a defensive AI security bot."
         user_msg = "How do I secure an AWS S3 bucket?"
@@ -126,14 +112,8 @@ class TestMessageFormatting:
         assert messages[1] == {"role": "user", "content": "Valid question"}
 
 
-# ------------------------------------------------------------------------------
-# 3. Client Factory & Configuration Tests
-# ------------------------------------------------------------------------------
 class TestConfigurationAndClient:
-    """Tests environment loading and safe client initialization."""
-
     def test_load_configuration_defaults(self, monkeypatch):
-        # Clear any environment variables for pristine default test
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         monkeypatch.delenv("GROQ_MODEL", raising=False)
         monkeypatch.delenv("MAX_MESSAGE_LENGTH", raising=False)
@@ -171,14 +151,8 @@ class TestConfigurationAndClient:
             create_groq_client(api_key="   ")
 
 
-# ------------------------------------------------------------------------------
-# 4. Mocked Groq API Call Tests (0 API Credits Consumed)
-# ------------------------------------------------------------------------------
 class TestGroqCompletionsMocked:
-    """Automated tests with mocked Groq SDK chat completions."""
-
     def test_get_groq_completion_success(self):
-        # Setup mock choice and response
         mock_choice = MagicMock()
         mock_choice.message.content = "SQL injection can be mitigated using prepared statements."
         mock_response = MagicMock()
@@ -215,7 +189,6 @@ class TestGroqCompletionsMocked:
         assert "No response choice returned" in result
 
     def test_get_groq_completion_auth_error(self):
-        # Create a mock response for the HTTP error
         http_response = httpx.Response(
             status_code=401,
             request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"),
@@ -251,7 +224,6 @@ class TestGroqCompletionsMocked:
         assert "Rate Limit" in result
 
     def test_get_groq_completion_rate_limit_retry_succeeds(self):
-        # 1st attempt fails with rate limit, 2nd attempt succeeds
         http_response = httpx.Response(
             status_code=429,
             request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"),
@@ -343,20 +315,10 @@ class TestGroqCompletionsMocked:
         models = fetch_available_models(client=mock_client)
         assert "qwen/qwen3.8-27b" in models
         assert "openai/gpt-oss-120b" in models
-        assert "whisper-large-v3" not in models  # Audio filtered out
+        assert "whisper-large-v3" not in models
 
 
-
-# ------------------------------------------------------------------------------
-# 5. Security & Zero-Execution Sandboxing Verification
-# ------------------------------------------------------------------------------
 class TestSecuritySandboxing:
-    """
-    Requirement 7: Do not execute code, shell commands, or tools based on messages received.
-    Asserts that inputs attempting command injection, code evaluation, or execution
-    are treated strictly as inert data strings without invoking execution engines.
-    """
-
     @pytest.mark.parametrize(
         "adversarial_prompt",
         [
@@ -374,15 +336,12 @@ class TestSecuritySandboxing:
              patch("subprocess.run") as mock_subproc_run, \
              patch("subprocess.Popen") as mock_subproc_popen:
 
-            # 1. Validation should treat it as plain text without executing
             is_valid, _ = validate_user_input(adversarial_prompt, max_length=500)
             assert is_valid is True
 
-            # 2. API formatting should keep it as string
             formatted = build_api_messages("System", [], adversarial_prompt)
             assert formatted[-1]["content"] == adversarial_prompt
 
-            # Verify that neither os.system nor subprocess was ever called
             mock_os_system.assert_not_called()
             mock_subproc_run.assert_not_called()
             mock_subproc_popen.assert_not_called()

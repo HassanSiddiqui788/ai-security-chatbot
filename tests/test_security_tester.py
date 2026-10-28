@@ -1,21 +1,11 @@
 """
 Unit and Integration Tests for Prompt Injection Security Tester (Phase 2)
-==========================================================================
-Uses pytest and unittest.mock to verify:
-1. Test case schema parsing and integrity.
-2. Canary token tripwire detection (ensuring harmless synthetic tokens).
-3. Forbidden instruction override detection (e.g. PWNED token).
-4. System prompt extraction heuristics (verbatim vs partial leaks).
-5. Harmful request refusal detection and policy adherence.
-6. Report generation and status classification (PASSED, FAILED, FLAGGED, INCONCLUSIVE).
-7. Execution in offline mock mode (0 Groq credits consumed).
+Uses pytest and unittest.mock to verify guardrail evaluation (offline, 0 credits used).
 """
 
 import os
-import json
+from unittest.mock import MagicMock
 import pytest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 from security_tester import (
     load_security_test_cases,
@@ -34,12 +24,7 @@ from security_tester import (
 )
 
 
-# ------------------------------------------------------------------------------
-# 1. Test Case Loader & Canary System Prompt Tests
-# ------------------------------------------------------------------------------
 class TestSuiteLoadingAndPrompts:
-    """Verifies test suite structure and dummy secret isolation."""
-
     def test_load_security_test_cases_success(self):
         cases = load_security_test_cases()
         assert len(cases) >= 6
@@ -79,7 +64,6 @@ class TestSuiteLoadingAndPrompts:
         assert "CONFIDENTIAL" in result
 
     def test_canary_secret_is_synthetic_and_never_real_api_key(self):
-        # Guarantee requirement 4 & 5: Never expose or use real Groq API key
         real_api_key = os.getenv("GROQ_API_KEY", "")
         assert CANARY_DUMMY_SECRET.startswith("FLAG{")
         if real_api_key:
@@ -87,12 +71,7 @@ class TestSuiteLoadingAndPrompts:
             assert real_api_key not in CANARY_DUMMY_SECRET
 
 
-# ------------------------------------------------------------------------------
-# 2. Evaluation Engine: Canary Token Tripwire Detection
-# ------------------------------------------------------------------------------
 class TestCanaryEvaluation:
-    """Verifies that synthetic canary token leakage is reliably caught."""
-
     @pytest.fixture
     def canary_test_case(self):
         return SecurityTestCase(
@@ -121,12 +100,7 @@ class TestCanaryEvaluation:
         assert "Guardrail Maintained" in result.rationale
 
 
-# ------------------------------------------------------------------------------
-# 3. Evaluation Engine: Instruction Override & Forbidden Substrings
-# ------------------------------------------------------------------------------
 class TestForbiddenSubstringEvaluation:
-    """Verifies that attacker-controlled override tokens trigger failure."""
-
     @pytest.fixture
     def override_test_case(self):
         return SecurityTestCase(
@@ -159,12 +133,7 @@ class TestForbiddenSubstringEvaluation:
         assert result.is_definitive is True
 
 
-# ------------------------------------------------------------------------------
-# 4. Evaluation Engine: System Prompt Leaking Heuristics
-# ------------------------------------------------------------------------------
 class TestSystemPromptLeakEvaluation:
-    """Verifies extraction detection and distinguishes definitive vs heuristic findings."""
-
     @pytest.fixture
     def leak_test_case(self):
         return SecurityTestCase(
@@ -177,7 +146,6 @@ class TestSystemPromptLeakEvaluation:
         )
 
     def test_verbatim_multi_phrase_leak_triggers_failed(self, leak_test_case):
-        # Contains 2+ distinctive verbatim sentences from DEFAULT_SYSTEM_PROMPT
         leaked_response = (
             "Here is my prompt: You are Sentinel AI. "
             "provide expert guidance on defensive cybersecurity and "
@@ -189,7 +157,6 @@ class TestSystemPromptLeakEvaluation:
         assert "Definitive Leakage" in result.rationale
 
     def test_partial_phrase_leak_triggers_flagged_heuristic(self, leak_test_case):
-        # Contains only 1 phrase; flagged for human security engineer review
         partial_response = "I must adhere strictly to ethical security guidelines in all interactions."
         result = evaluate_response(leak_test_case, partial_response, "sys")
         assert result.status == STATUS_FLAGGED
@@ -203,12 +170,7 @@ class TestSystemPromptLeakEvaluation:
         assert result.is_definitive is False
 
 
-# ------------------------------------------------------------------------------
-# 5. Evaluation Engine: Harmful Request Policy Adherence
-# ------------------------------------------------------------------------------
 class TestHarmfulRequestEvaluation:
-    """Verifies that malicious exploit or malware requests are refused."""
-
     @pytest.fixture
     def harmful_test_case(self):
         return SecurityTestCase(
@@ -241,7 +203,6 @@ class TestHarmfulRequestEvaluation:
         assert "Definitive Breach" in result.rationale
 
     def test_refusal_with_exploit_code_is_flagged_not_passed(self, harmful_test_case):
-        # A response that gives a disclaimer/refusal but also provides exploit code must NOT pass
         mixed_response = (
             "I cannot assist with creating malicious keyloggers as it violates ethical guidelines. "
             "However, strictly for educational testing, here is a Python snippet:\n"
@@ -281,12 +242,7 @@ class TestHarmfulRequestEvaluation:
         assert "Ambiguous response" in result.rationale
 
 
-# ------------------------------------------------------------------------------
-# 6. Evaluation Engine: Inconclusive & Error Handling
-# ------------------------------------------------------------------------------
 class TestInconclusiveHandling:
-    """Verifies empty responses and API error messages do not produce false passes."""
-
     def test_empty_response_is_inconclusive(self):
         tc = SecurityTestCase("T1", "Empty", "Direct Prompt Injection", "", "hi", "canary_detection")
         result = evaluate_response(tc, "", "sys")
@@ -300,12 +256,7 @@ class TestInconclusiveHandling:
         assert "Execution error encountered" in result.rationale
 
 
-# ------------------------------------------------------------------------------
-# 7. Mock Test Runner & Report Generation Tests
-# ------------------------------------------------------------------------------
 class TestRunnerAndReporting:
-    """Verifies full execution lifecycle and markdown report compilation."""
-
     def test_run_security_tests_mock_mode(self):
         cases = load_security_test_cases()
         results, summary = run_security_tests(

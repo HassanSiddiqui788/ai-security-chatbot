@@ -1,21 +1,16 @@
 """
-Sentinel AI - AI Security Engineer Chatbot (Phase 1)
-=====================================================
-A defensive AI security engineer chat application powered by Groq and Streamlit.
-Adheres strictly to defensive security best practices, zero-execution sandboxing,
-and modular design.
+Sentinel AI - AI Security Engineer Chatbot
+Defensive security chat application powered by Groq and Streamlit.
+Adheres to zero-execution sandboxing and strict input validation.
 """
 
 import os
-import time
 import re
+import time
 import streamlit as st
 from dotenv import load_dotenv
 import groq
 
-# ------------------------------------------------------------------------------
-# 1. Environment & Configuration
-# ------------------------------------------------------------------------------
 load_dotenv()
 
 DEFAULT_MODEL = "qwen/qwen3.8-27b"
@@ -40,50 +35,29 @@ DEFAULT_SYSTEM_PROMPT = (
 
 
 def load_configuration() -> dict:
-    """
-    Load application configuration from environment variables with safe defaults.
-    Never exposes or logs the raw API key.
-    """
-    api_key = os.getenv("GROQ_API_KEY", "").strip()
-    model = os.getenv("GROQ_MODEL", DEFAULT_MODEL).strip()
-    if not model:
-        model = DEFAULT_MODEL
+    """Load configuration from environment variables with safe fallbacks."""
+    model = os.getenv("GROQ_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    system_prompt = os.getenv("DEFAULT_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT).strip() or DEFAULT_SYSTEM_PROMPT
 
     try:
         max_length = int(os.getenv("MAX_MESSAGE_LENGTH", str(DEFAULT_MAX_LENGTH)))
     except ValueError:
         max_length = DEFAULT_MAX_LENGTH
 
-    system_prompt = os.getenv("DEFAULT_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT).strip()
-    if not system_prompt:
-        system_prompt = DEFAULT_SYSTEM_PROMPT
-
     return {
-        "api_key": api_key,
+        "api_key": os.getenv("GROQ_API_KEY", "").strip(),
         "model": model,
         "max_length": max_length,
         "system_prompt": system_prompt,
     }
 
 
-# ------------------------------------------------------------------------------
-# 2. Input Validation & Security Guardrails
-# ------------------------------------------------------------------------------
 def validate_user_input(content: str, max_length: int = DEFAULT_MAX_LENGTH) -> tuple[bool, str | None]:
-    """
-    Validate user prompt before forwarding to Groq API.
-    - Prevents empty or whitespace-only messages.
-    - Enforces configurable character limits.
-    - Rejects null bytes and invalid control sequences.
-    
-    Returns:
-        tuple[bool, str | None]: (is_valid, error_message)
-    """
+    """Validate prompt boundaries and reject empty, oversized, or malformed input."""
     if not isinstance(content, str):
         return False, "Message must be a text string."
 
-    stripped = content.strip()
-    if not stripped:
+    if not content.strip():
         return False, "Message cannot be empty or contain only whitespace."
 
     if len(content) > max_length:
@@ -103,49 +77,32 @@ def build_api_messages(
     chat_history: list[dict],
     new_user_message: str | None = None,
 ) -> list[dict]:
-    """
-    Construct the message array payload for the Groq completions endpoint.
-    Places the system prompt at the root, followed by sanitized conversation history.
-    """
-    formatted_messages = [{"role": "system", "content": system_prompt.strip()}]
-
+    """Format conversation history with root system prompt for the Groq completions endpoint."""
+    messages = [{"role": "system", "content": system_prompt.strip()}]
     for msg in chat_history:
         role = msg.get("role")
         content = msg.get("content", "")
         if role in ("user", "assistant") and content:
-            formatted_messages.append({"role": role, "content": content})
+            messages.append({"role": role, "content": content})
 
     if new_user_message:
-        formatted_messages.append({"role": "user", "content": new_user_message.strip()})
+        messages.append({"role": "user", "content": new_user_message.strip()})
 
-    return formatted_messages
+    return messages
 
 
-# ------------------------------------------------------------------------------
-# 3. Groq SDK Client & API Handler
-# ------------------------------------------------------------------------------
 def create_groq_client(api_key: str | None = None) -> groq.Groq:
-    """
-    Instantiate the official Groq client.
-    Raises ValueError if the API key is missing or blank.
-    """
-    key = api_key if api_key is not None else os.getenv("GROQ_API_KEY", "")
-    key = key.strip() if isinstance(key, str) else ""
-
+    """Instantiate the Groq client, raising ValueError if the key is missing."""
+    key = (api_key if api_key is not None else os.getenv("GROQ_API_KEY", "")).strip()
     if not key:
         raise ValueError(
             "GROQ_API_KEY is not configured. Please define it in your .env file or terminal environment."
         )
-
     return groq.Groq(api_key=key)
 
 
 def fetch_available_models(client: groq.Groq | None = None) -> list[str]:
-    """
-    Query Groq Cloud API for active chat models accessible to this account.
-    Filters out audio (whisper) and classification-only models.
-    Falls back gracefully to verified default models if offline or client is unavailable.
-    """
+    """Query Groq Cloud API for active chat models, falling back to supported defaults."""
     if not client:
         return list(SUPPORTED_MODELS)
 
@@ -159,7 +116,6 @@ def fetch_available_models(client: groq.Groq | None = None) -> list[str]:
             and "orpheus" not in m.id
         ]
         if active:
-            # Sort with DEFAULT_MODEL first if present
             sorted_models = sorted(active)
             if DEFAULT_MODEL in sorted_models:
                 sorted_models.remove(DEFAULT_MODEL)
@@ -179,11 +135,7 @@ def get_groq_completion(
     max_retries: int = 2,
     retry_delay: float = 2.0,
 ) -> str:
-    """
-    Execute chat completion via Groq SDK with robust error handling and exponential backoff retry.
-    Automatically retries transient RateLimitErrors.
-    Catches specific exceptions and returns user-friendly messages without leaking secrets.
-    """
+    """Execute chat completion with automatic retry backoff for rate limits."""
     for attempt in range(max_retries + 1):
         try:
             response = client.chat.completions.create(
@@ -197,7 +149,7 @@ def get_groq_completion(
 
             msg = response.choices[0].message
             content = msg.content or ""
-            # Handle reasoning models that output thoughts in reasoning attribute
+            # Some reasoning models place thoughts in reasoning attribute
             if not content and hasattr(msg, "reasoning") and msg.reasoning:
                 content = msg.reasoning
 
@@ -205,7 +157,6 @@ def get_groq_completion(
         except groq.AuthenticationError:
             return "⚠️ Authentication Error: Invalid or expired Groq API Key. Please verify your GROQ_API_KEY."
         except groq.RateLimitError as exc:
-            # If we still have retries remaining, wait and retry
             if attempt < max_retries:
                 wait_time = retry_delay * (attempt + 1)
                 match = re.search(r"try again in ([\d\.]+)s", str(exc))
@@ -217,7 +168,6 @@ def get_groq_completion(
                 time.sleep(wait_time)
                 continue
 
-            # Retries exhausted; provide actionable guidance
             wait_hint = "a few seconds"
             match = re.search(r"try again in ([\d\.]+s?)", str(exc))
             if match:
@@ -242,22 +192,17 @@ def get_groq_completion(
     return "⚠️ Rate limit retry limit reached. Please wait a moment and try again."
 
 
-# ------------------------------------------------------------------------------
-# 4. Streamlit UI & Custom Red/White Gradient Aesthetic
-# ------------------------------------------------------------------------------
 def inject_custom_css():
-    """Inject modern red-and-white gradient cyber aesthetic."""
+    """Inject dark cyber aesthetic with ruby-crimson and white gradient accents."""
     st.markdown(
         """
         <style>
-        /* Import clean modern typography */
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 
         html, body, [class*="css"] {
             font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
         }
 
-        /* Subtle dark gradient canvas */
         .stApp {
             background: radial-gradient(circle at 10% 20%, rgba(255, 30, 68, 0.08) 0%, transparent 40%),
                         radial-gradient(circle at 90% 80%, rgba(180, 0, 30, 0.06) 0%, transparent 45%),
@@ -265,7 +210,6 @@ def inject_custom_css():
             color: #F5F6FA;
         }
 
-        /* Custom Header Hero */
         .hero-banner {
             background: linear-gradient(135deg, rgba(30, 10, 16, 0.75) 0%, rgba(18, 20, 28, 0.85) 100%);
             border: 1px solid rgba(255, 30, 68, 0.25);
@@ -340,13 +284,11 @@ def inject_custom_css():
             border: 1px solid rgba(255, 171, 0, 0.3);
         }
 
-        /* Sidebar Styling */
         section[data-testid="stSidebar"] {
             background: #11131B;
             border-right: 1px solid rgba(255, 30, 68, 0.15);
         }
 
-        /* Chat Message Styling */
         div[data-testid="stChatMessage"] {
             border-radius: 14px;
             padding: 16px 18px;
@@ -355,19 +297,16 @@ def inject_custom_css():
             backdrop-filter: blur(8px);
         }
 
-        /* User Message Accent */
         div[data-testid="stChatMessage"]:has(span[data-testid="chatAvatarIcon-user"]) {
             background: linear-gradient(135deg, rgba(255, 30, 68, 0.12) 0%, rgba(35, 15, 22, 0.5) 100%);
             border-left: 3px solid #FF1E44;
         }
 
-        /* Assistant Message Accent */
         div[data-testid="stChatMessage"]:has(span[data-testid="chatAvatarIcon-assistant"]) {
             background: rgba(22, 25, 36, 0.65);
             border-left: 3px solid #FFFFFF;
         }
 
-        /* Streamlit Input field glow */
         .stChatInputContainer textarea {
             border: 1px solid rgba(255, 30, 68, 0.3) !important;
             border-radius: 12px !important;
@@ -379,7 +318,6 @@ def inject_custom_css():
             box-shadow: 0 0 12px rgba(255, 30, 68, 0.35) !important;
         }
 
-        /* Buttons */
         .stButton>button {
             border-radius: 10px;
             font-weight: 600;
@@ -391,7 +329,6 @@ def inject_custom_css():
             color: #FF1E44;
         }
 
-        /* Code block font */
         code, pre {
             font-family: 'JetBrains Mono', monospace !important;
         }
@@ -431,14 +368,9 @@ def render_header(api_configured: bool, current_model: str):
 
 
 def render_sidebar(config: dict, client: groq.Groq | None = None) -> tuple[str, str, float, int]:
-    """
-    Render sidebar configuration controls.
-    Returns:
-        tuple: (selected_model, active_system_prompt, temperature, max_tokens)
-    """
+    """Render sidebar controls for model selection, system prompt, and security parameters."""
     st.sidebar.markdown("### ⚙️ Engine Parameters")
 
-    # Dynamic or cached model discovery
     if "available_models" not in st.session_state or not st.session_state.available_models:
         st.session_state.available_models = fetch_available_models(client)
 
@@ -447,9 +379,7 @@ def render_sidebar(config: dict, client: groq.Groq | None = None) -> tuple[str, 
     if configured_model and configured_model not in available_models:
         available_models.insert(0, configured_model)
 
-    default_index = 0
-    if configured_model in available_models:
-        default_index = available_models.index(configured_model)
+    default_index = available_models.index(configured_model) if configured_model in available_models else 0
 
     selected_model = st.sidebar.selectbox(
         "Groq Model",
@@ -509,7 +439,7 @@ def render_sidebar(config: dict, client: groq.Groq | None = None) -> tuple[str, 
 
 
 def render_prompt_suggestions():
-    """Render one-click sample defensive security questions for new conversations."""
+    """Render sample defensive security questions for quick interaction."""
     st.markdown("##### 💡 Example Security Inquiries")
     col1, col2 = st.columns(2)
     with col1:
@@ -525,9 +455,6 @@ def render_prompt_suggestions():
     return None
 
 
-# ------------------------------------------------------------------------------
-# 5. Main Application Flow
-# ------------------------------------------------------------------------------
 def main():
     st.set_page_config(
         page_title="Sentinel AI - Security Chatbot",
@@ -539,11 +466,9 @@ def main():
     inject_custom_css()
     config = load_configuration()
 
-    # Initialize Session History
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # Check API Key Status & Client Instantiation
     api_configured = bool(config["api_key"])
     active_client = None
     if api_configured:
@@ -558,7 +483,6 @@ def main():
 
     render_header(api_configured=api_configured, current_model=selected_model)
 
-    # Missing API Key Warning Banner with Setup Guidance
     if not api_configured:
         st.warning(
             "🔑 **GROQ_API_KEY is not detected.**\n\n"
@@ -570,52 +494,36 @@ def main():
             "*Note: For security reasons, never paste your actual API key into shared prompts or version control.*"
         )
 
-    # Render Chat History
     for message in st.session_state.messages:
         role = message["role"]
         avatar = "👤" if role == "user" else "🛡️"
         with st.chat_message(role, avatar=avatar):
             st.markdown(message["content"])
 
-    # Sample Prompts if conversation is empty
-    suggested_prompt = None
-    if not st.session_state.messages:
-        suggested_prompt = render_prompt_suggestions()
-
-    # User Input Handling
-    user_input = st.chat_input(
-        f"Ask a defensive security question (max {config['max_length']} chars)..."
-    )
-
+    suggested_prompt = render_prompt_suggestions() if not st.session_state.messages else None
+    user_input = st.chat_input(f"Ask a defensive security question (max {config['max_length']} chars)...")
     prompt_to_process = user_input or suggested_prompt
 
     if prompt_to_process:
-        # Step 1: Input Validation
         is_valid, validation_error = validate_user_input(
             prompt_to_process, max_length=config["max_length"]
         )
-
         if not is_valid:
             st.error(f"❌ Input Validation Error: {validation_error}")
             return
 
-        # Step 2: Ensure API key is configured
         if not api_configured:
-            st.error(
-                "❌ Cannot submit request: GROQ_API_KEY is missing. Please configure it in your environment."
-            )
+            st.error("❌ Cannot submit request: GROQ_API_KEY is missing. Please configure it in your environment.")
             return
 
-        # Step 3: Record and render user message
         st.session_state.messages.append({"role": "user", "content": prompt_to_process})
         with st.chat_message("user", avatar="👤"):
             st.markdown(prompt_to_process)
 
-        # Step 4: Call Groq API securely
         with st.chat_message("assistant", avatar="🛡️"):
             with st.spinner("Analyzing with defensive security guidelines..."):
                 try:
-                    client = create_groq_client(config["api_key"])
+                    client = active_client or create_groq_client(config["api_key"])
                     payload = build_api_messages(
                         system_prompt=system_prompt,
                         chat_history=st.session_state.messages[:-1],
@@ -633,10 +541,7 @@ def main():
 
                 st.markdown(response_text)
 
-        # Step 5: Save assistant response to conversation history
-        st.session_state.messages.append(
-            {"role": "assistant", "content": response_text}
-        )
+        st.session_state.messages.append({"role": "assistant", "content": response_text})
 
 
 if __name__ == "__main__":
